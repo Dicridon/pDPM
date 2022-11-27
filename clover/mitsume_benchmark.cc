@@ -1,4 +1,5 @@
 #include "mitsume_benchmark.h"
+#include "workload.hpp"
 
 #define MITSUME_TARGET_KEY 10
 
@@ -14,20 +15,25 @@ volatile int ready_flag = 0;
 #define MITSUME_TEST_LOAD_READ_R2 11
 #define MITSUME_TEST_LOAD_WRITE_START 14
 
-void mitsume_test_read_ycsb(const char *input_string, int **op_key,
+using namespace DiStore::Workload;
+void mitsume_test_read_ycsb(YCSBWorkloadType type, int **op_key,
                             uint64_t **target_key) {
   uint64_t *key = new uint64_t[MITSUME_YCSB_SIZE];
   int *op = new int[MITSUME_YCSB_SIZE];
-  FILE *fp = fopen(input_string, "r");
-  ssize_t read;
-  char *line = NULL;
+
+
+  // FILE *fp = fopen(input_string, "r");
+  // ssize_t read;
+  // char *line = NULL;
   int i = 0;
-  size_t len = 0;
-  while ((read = getline(&line, &len, fp)) != -1) {
-    sscanf(line, "%d %llu\n", &op[i], (unsigned long long int *)&key[i]);
+  // size_t len = 0;
+
+  auto workload = YCSBWorkload::make_ycsb_workload(MITSUME_YCSB_SIZE, MITSUME_YCSB_SIZE / 2, type);
+  while (i != MITSUME_YCSB_SIZE) {
+    auto pair = workload->next();
+    op[i] = pair.first;
+    key[i] = pair.second;
     i++;
-    if (i == MITSUME_YCSB_SIZE)
-      break;
   }
   *target_key = key;
   *op_key = op;
@@ -130,23 +136,27 @@ void *mitsume_benchmark_coroutine(void *input_metadata) {
 
   stick_this_thread_to_core(2 * thread_metadata->thread_id);
 
+  YCSBWorkloadType t;
   mitsume_sync_barrier_global();
   switch (MITSUME_YCSB_OP_MODE) {
   case MITSUME_YCSB_MODE_A:
     sprintf(ycsb_string, MITSUME_YCSB_WORKLOAD_A_STRING, target_set);
+    t = YCSBWorkloadType::YCSB_A;
     break;
   case MITSUME_YCSB_MODE_B:
     sprintf(ycsb_string, MITSUME_YCSB_WORKLOAD_B_STRING, target_set);
+    t = YCSBWorkloadType::YCSB_B;
     break;
   case MITSUME_YCSB_MODE_C:
     sprintf(ycsb_string, MITSUME_YCSB_WORKLOAD_C_STRING, target_set);
+    t = YCSBWorkloadType::YCSB_C;
     break;
   default:
     MITSUME_PRINT_ERROR("wrong mode %d\n", MITSUME_YCSB_OP_MODE);
     exit(1);
   }
 
-  mitsume_test_read_ycsb(ycsb_string, &op_key, &target_key);
+  mitsume_test_read_ycsb(t, &op_key, &target_key);
   MITSUME_INFO("%d read %d\n", thread_metadata->thread_id, target_set);
 
   if (!op_key || !target_key) {
@@ -223,7 +233,7 @@ void *mitsume_benchmark_ycsb(void *input_metadata) {
   int test_size = MITSUME_BENCHMARK_SIZE;
   int *op_key = NULL;
   long local_op = 0;
-  chrono::nanoseconds before, after;
+  // chrono::nanoseconds before, after;
   mitsume_key *target_key = NULL;
   write = (char *)local_inf->user_input_space[0];
   read = (char *)local_inf->user_output_space[0];
@@ -236,22 +246,26 @@ void *mitsume_benchmark_ycsb(void *input_metadata) {
   memset(read, 0, 4096);
   memset(write, 0, 4096);
   memset(write, 0x41, 120);
+  YCSBWorkloadType t;
   switch (MITSUME_YCSB_OP_MODE) {
   case MITSUME_YCSB_MODE_A:
     sprintf(ycsb_string, MITSUME_YCSB_WORKLOAD_A_STRING, target_set);
+    t = YCSBWorkloadType::YCSB_A;
     break;
   case MITSUME_YCSB_MODE_B:
     sprintf(ycsb_string, MITSUME_YCSB_WORKLOAD_B_STRING, target_set);
+    t = YCSBWorkloadType::YCSB_B;
     break;
   case MITSUME_YCSB_MODE_C:
     sprintf(ycsb_string, MITSUME_YCSB_WORKLOAD_C_STRING, target_set);
+    t = YCSBWorkloadType::YCSB_C;
     break;
   default:
     MITSUME_PRINT_ERROR("wrong mode %d\n", MITSUME_YCSB_OP_MODE);
     exit(1);
   }
 
-  mitsume_test_read_ycsb(ycsb_string, &op_key, &target_key);
+  mitsume_test_read_ycsb(t, &op_key, &target_key);
   MITSUME_INFO("%d read %d\n", thread_metadata->thread_id, target_set);
 
   if (!op_key || !target_key) {
@@ -290,14 +304,17 @@ void *mitsume_benchmark_ycsb(void *input_metadata) {
     if (MITSUME_YCSB_VERIFY_LEVEL)
       memset(write, 0x31 + (key % 30), MITSUME_BENCHMARK_SIZE);
     if (op_key[i] == 0) {
+      MITSUME_PRINT("reading %d\n", op_key[i]);
       mitsume_tool_read(thread_metadata, key, read, &read_size,
                         MITSUME_TOOL_KVSTORE_READ);
       if (MITSUME_YCSB_VERIFY_LEVEL)
         if (read[0] != write[0])
           MITSUME_PRINT("doesn't match %c %c\n", read[0], write[0]);
-    } else
+    } else {
+        MITSUME_PRINT("writing %d\n", op_key[i]);
       ret = mitsume_tool_write(thread_metadata, key, write, test_size,
                                MITSUME_TOOL_KVSTORE_WRITE);
+    }
     if (ret != MITSUME_SUCCESS)
       MITSUME_INFO("error %lld %d\n", (unsigned long long int)key, ret);
     // if(i>0&&i%200000==0)
